@@ -32,9 +32,10 @@ module pe_con#(
     wire [31:0] dout [0:VECTOR_SIZE-1];
     
     //bram addr
-    wire [L_RAM_SIZE-1:0] rdaddr;
-    wire [L_RAM_SIZE-1:0] upaddr;
+    // wire [L_RAM_SIZE-1:0] rdaddr;
+    // wire [L_RAM_SIZE-1:0] upaddr;
     wire bitaddr; 
+    wire [L_RAM_SIZE-1:0] row;
 
     wire [31:0] rddata;
     
@@ -50,7 +51,7 @@ module pe_con#(
 
     always @(posedge aclk)
         if (we_global)
-            globalmem[addr] <= rddata;
+            globalmem[row][addr] <= rddata;
         else begin
             generate for (j=0; j<VECTOR_SIZE; j=j+1) begin : gdout64
                 gdout[j] <= globalmem[j][addr];
@@ -158,7 +159,7 @@ module pe_con#(
                 counter <= counter - 1;
     
     // additional counter for done 64
-    reg [31:0] done_cnt;
+    reg [L_RAM_SIZE-1:0] done_cnt;
     always @(posedge aclk)
         if (counter_reset)
             done_cnt <= 'd0;
@@ -170,15 +171,15 @@ module pe_con#(
 
     //part3: update output and internal register
     //S_LOAD: we
-	assign we_local = (load_flag && counter[L_RAM_SIZE*2 + 1] && !counter[0]) ? 'd1 : 'd0;
-	assign we_global = (load_flag && !counter[L_RAM_SIZE*2 + 1] && !counter[0]) ? 'd1 : 'd0;
+	assign we_local = (load_flag && bitaddr && !counter[0]) ? 'd1 : 'd0;
+	assign we_global = (load_flag && !bitaddr && !counter[0]) ? 'd1 : 'd0;
 	
 	//S_CALC: wrdata 
    always @(posedge aclk)
         if (!aresetn)
                 wrdata <= 'd0;
         else
-            if (calc_done)
+            if (calc_done || write_done)
                     wrdata <= dout[done_cnt];
             else
                     wrdata <= wrdata;
@@ -212,9 +213,15 @@ module pe_con#(
     assign addr = (load_flag)? counter[L_RAM_SIZE:1]:
                   (calc_flag)? counter[L_RAM_SIZE-1:0]: 'd0;
 
+        // S_LOAD: row index of matrix
+    assign row = (load_flag)? counter[2* L_RAM_SIZE:L_RAM_SIZE+1];
+
+        // S_LOAD: bitaddr (bitaddr becomes 1 when starts reading vector from bram)
+    assign bitaddr = counter[2*L_RAM_SIZE+1];
+
 	//S_LOAD
 	assign din = (load_flag)? rddata : 'd0;
-    assign rdaddr = (state == S_LOAD)? counter[L_RAM_SIZE+1:1] : 'd0;
+    // assign rdaddr = (state == S_LOAD)? counter[L_RAM_SIZE+1:1] : 'd0;
 
 	//done signals
     assign load_done = (load_flag) && (counter == 'd0);
@@ -228,7 +235,7 @@ module pe_con#(
     assign rddata = BRAM_RDDATA;
     assign BRAM_WRDATA = wrdata;
     
-    assign BRAM_ADDR = (done_flag_en)? 0 : { {29-L_RAM_SIZE*2{1'b0}}, bitaddr, upaddr, rdaddr, 2'b00};
+    assign BRAM_ADDR = (done_flag_en)? {24'd64, done_cnt, 2'b00} : { {29-L_RAM_SIZE*2{1'b0}}, bitaddr, row, addr, 2'b00};
     assign BRAM_WE = (done_flag_en)? 4'hF : 0;
     
     genvar i;
