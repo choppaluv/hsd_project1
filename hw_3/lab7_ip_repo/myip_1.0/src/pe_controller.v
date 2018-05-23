@@ -28,8 +28,8 @@ module pe_con#(
     wire we_global;
     //wire we;
     wire valid;
-    wire dvalid;
-    wire [31:0] dout;
+    wire dvalid [0:VECTOR_SIZE-1];
+    wire [31:0] dout [0:VECTOR_SIZE-1];
     
     //bram addr
     wire [L_RAM_SIZE-1:0] rdaddr;
@@ -43,14 +43,19 @@ module pe_con#(
     
     clk_wiz_0 u_clk (.clk_out1(BRAM_CLK), .clk_in1(aclk));
    
+   genvar j;
    // global block ram
-    reg [31:0] gdout;
+    reg [31:0] gdout [0:VECTOR_SIZE-1];
     (* ram_style = "block" *) reg [31:0] globalmem [0:VECTOR_SIZE-1][0:VECTOR_SIZE-1];
+
     always @(posedge aclk)
         if (we_global)
             globalmem[addr] <= rddata;
-        else
-            gdout <= globalmem[addr];
+        else begin
+            generate for (j=0; j<VECTOR_SIZE; j=j+1) begin : gdout64
+                gdout[j] <= globalmem[j][addr];
+            end endgenerate
+        end
 
   
 	//FSM
@@ -58,6 +63,7 @@ module pe_con#(
     wire load_done;
     wire calc_done;
     wire done_done;
+    wire write_done;
         
     // state register
     reg [3:0] state, state_d;
@@ -95,7 +101,7 @@ module pe_con#(
     reg load_flag;
     wire load_flag_reset = !aresetn || load_done;
     wire load_flag_en = (state_d == S_IDLE) && (state == S_LOAD);
-    localparam CNTLOAD1 = (4*VECTOR_SIZE) -1;
+    localparam CNTLOAD1 = (2*(VECTOR_SIZE*VECTOR_SIZE + VECTOR_SIZE)) -1;
     always @(posedge aclk)
         if (load_flag_reset)
             load_flag <= 'd0;
@@ -138,9 +144,9 @@ module pe_con#(
     reg [31:0] counter;
     wire [31:0] ld_val = (load_flag_en)? CNTLOAD1 :
                          (calc_flag_en)? CNTCALC1 : 
-                         (done_flag_en)? CNTDONE  : 'd0;
+                         (done_flag_en || write_done)? CNTDONE  : 'd0;
     wire counter_ld = load_flag_en || calc_flag_en || done_flag_en;
-    wire counter_en = load_flag || dvalid || done_flag;
+    wire counter_en = load_flag || &dvalid || done_flag;
     wire counter_reset = !aresetn || load_done || calc_done || done_done;
     always @(posedge aclk)
         if (counter_reset)
@@ -164,8 +170,8 @@ module pe_con#(
 
     //part3: update output and internal register
     //S_LOAD: we
-	assign we_local = (load_flag && counter[L_RAM_SIZE+1] && !counter[0]) ? 'd1 : 'd0;
-	assign we_global = (load_flag && !counter[L_RAM_SIZE+1] && !counter[0]) ? 'd1 : 'd0;
+	assign we_local = (load_flag && counter[L_RAM_SIZE*2 + 1] && !counter[0]) ? 'd1 : 'd0;
+	assign we_global = (load_flag && !counter[L_RAM_SIZE*2 + 1] && !counter[0]) ? 'd1 : 'd0;
 	
 	//S_CALC: wrdata 
    always @(posedge aclk)
@@ -173,7 +179,7 @@ module pe_con#(
                 wrdata <= 'd0;
         else
             if (calc_done)
-                    wrdata <= dout;
+                    wrdata <= dout[done_cnt];
             else
                     wrdata <= wrdata;
 
@@ -197,7 +203,10 @@ module pe_con#(
     assign valid = (calc_flag) && valid_reg;
     
 	//S_CALC: ain
-	assign ain = (calc_flag)? gdout : 'd0;
+    genvar k;
+    generate for (k=0; k<VECTOR_SIZE; k=k+1) begin : ain64
+        assign ain[k] = (calc_flag)? gdout[k] : 'd0;
+    end endgenerate
 
 	//S_LOAD&&CALC
     assign addr = (load_flag)? counter[L_RAM_SIZE:1]:
@@ -209,7 +218,7 @@ module pe_con#(
 
 	//done signals
     assign load_done = (load_flag) && (counter == 'd0);
-    assign calc_done = (calc_flag) && (counter == 'd0) && dvalid;
+    assign calc_done = (calc_flag) && (counter == 'd0) && (&dvalid);
     assign write_done = (done_flag) && (counter == 'd0);
     assign done_done = (done_flag) && (done_cnt == 'd0);
     assign done = (state == S_DONE) && done_done;
@@ -222,22 +231,22 @@ module pe_con#(
     assign BRAM_ADDR = (done_flag_en)? 0 : { {29-L_RAM_SIZE*2{1'b0}}, bitaddr, upaddr, rdaddr, 2'b00};
     assign BRAM_WE = (done_flag_en)? 4'hF : 0;
     
-    //genvar i;
+    genvar i;
 
-    //generate for (i=0;i<VECTOR_SIZE;i=i+1) begin: pe64
+    generate for (i=0;i<VECTOR_SIZE;i=i+1) begin: pe64
     my_pe #(
         .L_RAM_SIZE(L_RAM_SIZE)
     ) u_pe (
         .aclk(aclk),
         .aresetn(aresetn && (state != S_DONE)),
-        .ain(ain),
+        .ain(ain[i]),
         .din(din),
         .addr(addr),
         .we(we_local),
         .valid(valid),
-        .dvalid(dvalid),
-        .dout(dout)
+        .dvalid(dvalid[i]),
+        .dout(dout[i])
     );
-    //end endgenerate
+    end endgenerate
 
 endmodule
